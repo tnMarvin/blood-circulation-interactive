@@ -1,0 +1,536 @@
+<!--
+功能：血液循環互動系統 - V13 (新增 JSON 匯入功能)
+代碼產生日期與時間：2026-11-14 23:25
+-->
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>心跳與體循環</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        img { user-select: none; pointer-events: none; }
+        body { overflow: hidden; }
+        
+        .dim-mask {
+            position: absolute;
+            top: 0;
+            width: 50%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.65);
+            transition: opacity 0.4s ease-in-out;
+            pointer-events: none;
+            z-index: 5;
+        }
+        .dim-mask.left { left: 0; }
+        .dim-mask.right { left: 50%; }
+        .mask-off { opacity: 0; }
+
+        .svg-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+        }
+
+        /* 展示模式：白色粒子流動動畫 */
+        @keyframes flow-forward { from { stroke-dashoffset: 16; } to { stroke-dashoffset: 0; } }
+
+        .vessel-path { fill: none; stroke-width: 4; stroke-dasharray: 8, 8; opacity: 0.15; transition: opacity 0.3s ease; }
+        .oxy-path { stroke: #ff6666; }    
+        .deoxy-path { stroke: #6688ff; }  
+
+        .active-systole .sys-art, .active-systole .pul-art { opacity: 1; stroke: #ffffff; animation: flow-forward 0.6s linear infinite; filter: drop-shadow(0 0 5px currentColor); }
+        .active-systole .sys-art { filter: drop-shadow(0 0 5px red) drop-shadow(0 0 10px red); }
+        .active-systole .pul-art { filter: drop-shadow(0 0 5px blue) drop-shadow(0 0 10px blue); }
+
+        .active-diastole .sys-vein, .active-diastole .pul-vein, .active-diastole .portal-vein { opacity: 1; stroke: #ffffff; animation: flow-forward 0.8s linear infinite; }
+        .active-diastole .sys-vein, .active-diastole .portal-vein { filter: drop-shadow(0 0 5px blue) drop-shadow(0 0 10px blue); }
+        .active-diastole .pul-vein { filter: drop-shadow(0 0 5px red) drop-shadow(0 0 10px red); }
+
+        /* 展示模式：器官熱區特效 */
+        .organ-group { cursor: pointer; }
+        .hotspot-trigger { fill: transparent; transition: fill 0.2s; }
+        .organ-group:hover .hotspot-trigger { fill: rgba(255, 255, 255, 0.2); }
+
+        /* 編輯模式 (校準) */
+        @keyframes edit-pulse {
+            0% { opacity: 0.3; stroke-width: 3; filter: drop-shadow(0 0 2px currentColor); }
+            50% { opacity: 1; stroke-width: 6; filter: drop-shadow(0 0 8px currentColor); }
+            100% { opacity: 0.3; stroke-width: 3; filter: drop-shadow(0 0 2px currentColor); }
+        }
+        
+        .edit-mode .vessel-path { animation: edit-pulse 1.5s infinite ease-in-out !important; stroke-dasharray: 12, 6 !important; }
+        .edit-mode .oxy-path { stroke: #ff8888 !important; }
+        .edit-mode .deoxy-path { stroke: #4466ff !important; }
+        .edit-mode .vessel-path.editing-target { animation: none !important; opacity: 1 !important; stroke-width: 8 !important; stroke-dasharray: none !important; stroke: #ffea00 !important; filter: drop-shadow(0 0 6px #000) !important; z-index: 20; }
+        
+        .edit-mode .organ-group { display: none; }
+        .hotspot-editing { cursor: grab; stroke: #fff; stroke-width: 2; transition: r 0.1s; }
+        .hotspot-editing:active { cursor: grabbing; }
+
+        .control-point { cursor: grab; stroke: #000; stroke-width: 1; transition: r 0.1s; }
+        .control-point:hover { r: 12; }
+        .control-point:active { cursor: grabbing; }
+
+        /* 文字自編模式的提示視覺 */
+        .editing-text-active {
+            outline: 2px dashed #ffea00 !important;
+            background-color: rgba(255, 234, 0, 0.1);
+            border-radius: 4px;
+            padding: 4px;
+            cursor: text;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-white h-screen flex flex-col p-4 font-sans">
+
+    <header class="mb-4 flex-shrink-0 text-center relative">
+        <h1 class="text-3xl font-bold text-blue-300 tracking-wider">心跳與體循環</h1>
+        <p class="text-sm text-slate-400 mt-1 absolute right-2 bottom-0 hidden lg:block" id="mode-hint">點選右側黑點查看器官與淋巴功能</p>
+    </header>
+
+    <main class="flex flex-col lg:flex-row gap-4 flex-grow h-full min-h-0 justify-between items-center w-full">
+        
+        <!-- ================= 左欄 ================= -->
+        <div class="flex-1 flex flex-col gap-4 w-full h-full min-h-0 relative">
+            <section class="bg-slate-800 p-2 rounded-lg border border-slate-700 flex flex-col flex-grow min-h-0 relative">
+                <h2 class="text-center text-lg font-bold mb-2 text-slate-300 flex-shrink-0">微觀：心臟剖面</h2>
+                <div class="bg-black rounded w-full h-full relative flex-grow overflow-hidden" style="aspect-ratio: 1.1/1; margin: 0 auto;">
+                    <img src="heart.jpg" class="w-full h-full object-contain absolute inset-0">
+                    <div id="mask-left" class="dim-mask left"></div>
+                    <div id="mask-right" class="dim-mask right"></div>
+                </div>
+            </section>
+
+            <section class="bg-slate-800 p-4 rounded-lg border border-slate-700 flex-shrink-0 flex flex-col justify-start relative shadow-inner">
+                <h2 class="text-center text-lg font-bold mb-3 text-slate-300 border-b border-slate-600 pb-2">操作面板</h2>
+                <div class="flex flex-wrap gap-2 justify-center mb-4">
+                    <button id="btn-systole" class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded font-bold transition flex-1 text-sm xl:text-base">心室收縮(送血)</button>
+                    <button id="btn-diastole" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded font-bold transition flex-1 text-sm xl:text-base">心室舒張(回流)</button>
+                    <button id="btn-auto" class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded font-bold transition text-sm xl:text-base">自動心搏</button>
+                </div>
+                
+                <!-- 控制按鈕區 -->
+                <div class="flex flex-wrap gap-2 justify-center items-center bg-slate-900 p-2 rounded border border-slate-700" id="control-panel">
+                    <select id="edit-target" class="px-2 py-1 bg-slate-700 rounded text-white hidden outline-none text-sm w-full mb-2"></select>
+                    <button id="btn-edit" class="px-3 py-2 bg-yellow-600 hover:bg-yellow-500 rounded font-bold transition text-sm">🛠️ 進入路徑/文字校準</button>
+                    
+                    <button id="btn-save" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 rounded font-bold hidden transition text-sm flex-1">💾 儲存</button>
+                    <button id="btn-export" class="px-3 py-2 bg-teal-600 hover:bg-teal-500 rounded font-bold hidden transition text-sm flex-1">📥 匯出</button>
+                    
+                    <!-- 隱藏的檔案上傳輸入框 -->
+                    <input type="file" id="file-import" accept=".json" class="hidden">
+                    <button id="btn-import" class="px-3 py-2 bg-orange-600 hover:bg-orange-500 rounded font-bold hidden transition text-sm flex-1">📤 匯入</button>
+                </div>
+                
+                <p id="edit-hint" class="text-yellow-400 text-xs mt-3 hidden text-justify leading-relaxed">
+                    💡 <b>編輯提示：</b> 右側解說文字已開啟編輯，直接點擊文字即可自編內容。切換下拉選單可調整新加入的淋巴考點黑點位置。
+                </p>
+            </section>
+        </div>
+
+        <!-- ================= 中欄 ================= -->
+        <section class="flex-none h-full bg-slate-800 p-2 rounded-lg border border-slate-700 relative">
+            <div class="relative h-full bg-slate-200 rounded overflow-hidden shadow-lg mx-auto" style="aspect-ratio: 1 / 2.15;">
+                <img src="bloodcirculation.jpg" class="w-full h-full object-cover absolute inset-0">
+                <svg id="interactive-svg" class="svg-layer absolute inset-0 w-full h-full" viewBox="0 0 1000 1500" preserveAspectRatio="xMidYMid slice">
+                    <g id="paths-group"></g>
+                    <g id="hotspots-group"></g>
+                    <g id="control-points"></g>
+                </svg>
+            </div>
+        </section>
+
+        <!-- ================= 右欄 ================= -->
+        <section class="flex-1 flex flex-col gap-4 w-full h-full min-h-0 relative">
+            <div class="bg-slate-800 rounded-lg border border-slate-700 shadow-lg p-6 flex flex-col justify-center flex-shrink-0" style="min-height: 35%;">
+                <h3 id="heart-state-title" class="text-2xl font-bold text-red-400 mb-3 text-center transition-all duration-300 outline-none">心室收縮期 (Systole)</h3>
+                <p id="heart-state-desc" class="text-slate-300 text-sm xl:text-base leading-relaxed text-justify transition-all duration-300 outline-none">
+                    心室肌肉收縮...
+                </p>
+            </div>
+            
+            <div class="bg-slate-800 rounded-lg border border-slate-700 shadow-lg p-6 flex flex-col justify-start flex-grow overflow-y-auto relative">
+                <div class="text-center mb-4 flex-shrink-0">
+                    <span class="inline-block w-4 h-4 bg-slate-500 rounded-full animate-pulse mr-2 border border-white"></span>
+                    <span class="text-slate-400 font-bold tracking-widest text-lg">臟器與淋巴功能</span>
+                </div>
+                <div class="border-t border-slate-700 pt-6 mt-2 flex-grow flex flex-col justify-center">
+                    <h3 id="info-title" class="text-2xl font-bold text-slate-500 mb-4 text-center">請點擊左方黑點</h3>
+                    <p id="info-desc" class="text-slate-300 text-base leading-relaxed text-justify transition-all duration-300 outline-none">
+                        點擊循環圖中閃爍的黑點，即可在此查看各個器官及淋巴系統考點的詳細血液交換任務與生理功能。
+                    </p>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <script>
+        // --- 1. 預設知識庫 ---
+        const defaultTexts = {
+            heart: {
+                systole: { title: "心室收縮期 (Systole)", desc: "心室肌肉強烈收縮，體積變小、內部壓力急劇升高，迫使血液強力擠入動脈。此時房室瓣關閉（發出第一心音，防止血液逆流回心房），半月瓣開啟讓血液送出。", color: "text-red-400" },
+                diastole: { title: "心室舒張期 (Diastole)", desc: "心室肌肉放鬆，體積變大、壓力降低，形成吸力讓心房的血液流入充盈心室。此時半月瓣關閉（發出第二心音，防止動脈血逆流），房室瓣開啟。", color: "text-blue-400" }
+            },
+            organs: {
+                "肺臟": "【氣體交換樞紐】缺氧血在此釋放二氧化碳，並結合氧氣。轉換為鮮紅的充氧血流回左心房。",
+                "胃": "【強力研磨機】消耗大量氧氣與ATP進行物理研磨與化學消化（胃酸）。吸收少部分水分與酒精後，滿載物資的缺氧血會送入「肝門靜脈」。",
+                "肝臟": "【海關與解毒中心】接收肝動脈的氧氣與「肝門靜脈」的物資。遇到養分轉肝醣，遇毒素進行解毒，安檢完畢才放行至全身。",
+                "肝門靜脈": "【特殊的過境通道】連接腸胃與肝臟的靜脈，不直接回心臟！將吸收的養分與潛在毒素第一時間扣送至肝臟安檢。",
+                "小腸": "【主要消化與吸收區】負責絕大部分的化學消化。小腸絨毛內的微血管負責吸收水溶性養分（如葡萄糖、胺基酸），隨後匯集送入「肝門靜脈」。",
+                "大腸": "【水分回收與殘渣成形】不具備消化酵素！主要負責回收食糜中剩餘的水分與電解質，並吸收腸道菌群產生的維生素。吸收的物資同樣匯流至「肝門靜脈」。",
+                "胰臟": "【內外分泌雙效器官】製造消化酵素注入小腸。同時分泌胰島素、升糖素等賀爾蒙送往全身調節血糖。",
+                "腎臟": "【血液淨化廠】微血管過濾血液，保留血球與蛋白質，將尿素、多餘水分與電解質排除形成尿液。",
+                "一般微血管": "【物資交接站】遍佈全身組織與肌肉。卸下氧氣與葡萄糖供細胞產生能量；帶走二氧化碳與廢物。",
+                "微淋巴管盲端": "【組織液回收】血漿滲出微血管成為組織液。約10%未被微血管回收的組織液，會流入末端封閉的微淋巴管，改稱為「淋巴」。(就像多餘的地下水漫流進水溝)",
+                "淋巴結": "【免疫防線】淋巴管沿途的膨大構造，內部聚集大量白血球，負責吞噬病原體、過濾淋巴液。感冒時摸到的局部腫塊通常是它在發炎作戰。(就像高速公路的安檢站)",
+                "淋巴管段落": "【單向推進動力】淋巴系統「沒有」心臟作為動力幫浦，管內具防止逆流的瓣膜，淋巴主要依靠人體活動時「周圍骨骼肌收縮」的擠壓來單向推進。(像腳踏式打氣筒)",
+                "鎖骨下靜脈": "【體液回歸點】淋巴管在體內逐漸匯集成較大的淋巴管，最終會在左右兩側的鎖骨下方注入靜脈，讓淋巴液重新回到血液循環中。(如下水道淨化後匯流回大河)",
+                "小腸乳糜管": "【會考特例考點】分布在小腸絨毛內的微淋巴管，專門吸收「脂溶性養分」。這些脂質不入微血管、不走肝門靜脈，而是直接進入淋巴系統。(專送大型包裹的VIP物流通道)"
+            }
+        };
+
+        // --- 2. 資料庫初始化 ---
+        const defaultData = { paths: {}, hotspots: {}, texts: JSON.parse(JSON.stringify(defaultTexts)) };
+        for(let i=1; i<=8; i++) defaultData.paths[`sys-art-${i}`] = [[500, 750], [450 + i*15, 950]];
+        for(let i=1; i<=7; i++) defaultData.paths[`sys-vein-${i}`] = [[450 + i*15, 950], [450, 700]];
+        defaultData.paths[`pul-art-1`] = [[450, 750], [350, 600]]; defaultData.paths[`pul-art-2`] = [[450, 750], [650, 600]]; 
+        defaultData.paths[`pul-vein-1`] = [[350, 600], [500, 700]]; defaultData.paths[`pul-vein-2`] = [[650, 600], [500, 700]]; 
+        defaultData.paths[`portal-vein-1`] = [[620, 750], [420, 720]]; 
+        
+        defaultData.hotspots["肺臟"] = [500, 250]; defaultData.hotspots["肝臟"] = [350, 700];
+        defaultData.hotspots["肝門靜脈"] = [470, 720]; defaultData.hotspots["胃"] = [600, 730]; 
+        defaultData.hotspots["小腸"] = [630, 810]; defaultData.hotspots["大腸"] = [580, 780]; 
+        defaultData.hotspots["胰臟"] = [650, 850]; defaultData.hotspots["腎臟"] = [380, 880];
+        defaultData.hotspots["一般微血管"] = [500, 1225];
+        
+        defaultData.hotspots["微淋巴管盲端"] = [550, 1200]; defaultData.hotspots["淋巴結"] = [430, 420];
+        defaultData.hotspots["淋巴管段落"] = [350, 800]; defaultData.hotspots["鎖骨下靜脈"] = [450, 380];
+        defaultData.hotspots["小腸乳糜管"] = [660, 820];
+
+        let appData = JSON.parse(localStorage.getItem('circulationConfigV13')) || 
+                      JSON.parse(localStorage.getItem('circulationConfigV12')) || 
+                      JSON.parse(localStorage.getItem('circulationConfigV11')) || defaultData;
+        
+        if(!appData.paths) appData = defaultData;
+        if(!appData.texts) appData.texts = JSON.parse(JSON.stringify(defaultTexts));
+        const lymphKeys = ["微淋巴管盲端", "淋巴結", "淋巴管段落", "鎖骨下靜脈", "小腸乳糜管"];
+        lymphKeys.forEach(key => {
+            if(!appData.hotspots[key]) {
+                appData.hotspots[key] = defaultData.hotspots[key];
+                appData.texts.organs[key] = defaultTexts.organs[key];
+            }
+        });
+
+        // --- 3. 狀態與 DOM ---
+        let isEditMode = false;
+        let currentEditTarget = 'sys-art-1';
+        let draggedNode = null;
+        let autoInterval = null;
+        let isSystole = true;
+        let currentOrganDisplay = null;
+
+        const svg = document.getElementById('interactive-svg');
+        const pathsGroup = document.getElementById('paths-group');
+        const hotspotsGroup = document.getElementById('hotspots-group');
+        const controlPointsGroup = document.getElementById('control-points');
+        const selectMenu = document.getElementById('edit-target');
+
+        // 生成下拉選單
+        const optGroupSysArt = document.createElement('optgroup'); optGroupSysArt.label = "體循環 - 動脈 (含氧/淡紅閃)";
+        for(let i=1; i<=8; i++) optGroupSysArt.innerHTML += `<option value="path|sys-art-${i}">🔴 體動脈 ${i}</option>`;
+        const optGroupSysVein = document.createElement('optgroup'); optGroupSysVein.label = "體循環 - 靜脈 (缺氧/藍閃)";
+        for(let i=1; i<=7; i++) optGroupSysVein.innerHTML += `<option value="path|sys-vein-${i}">🔵 體靜脈 ${i}</option>`;
+        optGroupSysVein.innerHTML += `<option value="path|portal-vein-1">🟣 肝門靜脈路線</option>`;
+        const optGroupPul = document.createElement('optgroup'); optGroupPul.label = "肺循環 (色彩反轉區)";
+        optGroupPul.innerHTML += `<option value="path|pul-art-1">🔵 肺動脈 1</option><option value="path|pul-art-2">🔵 肺動脈 2</option>`;
+        optGroupPul.innerHTML += `<option value="path|pul-vein-1">🔴 肺靜脈 1</option><option value="path|pul-vein-2">🔴 肺靜脈 2</option>`;
+        
+        const optGroupBloodHotspot = document.createElement('optgroup'); optGroupBloodHotspot.label = "血液器官黑點";
+        const bloodOrgans = ["肺臟", "肝臟", "肝門靜脈", "胃", "小腸", "大腸", "胰臟", "腎臟", "一般微血管"];
+        bloodOrgans.forEach(key => { if(appData.hotspots[key]) optGroupBloodHotspot.innerHTML += `<option value="hotspot|${key}">⚫ ${key}</option>`; });
+        
+        const optGroupLymphHotspot = document.createElement('optgroup'); optGroupLymphHotspot.label = "淋巴系統考點";
+        lymphKeys.forEach(key => { if(appData.hotspots[key]) optGroupLymphHotspot.innerHTML += `<option value="hotspot|${key}">🦠 ${key}</option>`; });
+
+        selectMenu.appendChild(optGroupBloodHotspot);
+        selectMenu.appendChild(optGroupLymphHotspot);
+        selectMenu.appendChild(optGroupSysArt);
+        selectMenu.appendChild(optGroupPul);
+        selectMenu.appendChild(optGroupSysVein);
+
+        // --- 文字即時編輯綁定 ---
+        const heartTitleEl = document.getElementById('heart-state-title');
+        const heartDescEl = document.getElementById('heart-state-desc');
+        const infoDescEl = document.getElementById('info-desc');
+
+        heartTitleEl.addEventListener('input', (e) => {
+            if(isEditMode) appData.texts.heart[isSystole ? 'systole' : 'diastole'].title = e.target.innerText;
+        });
+        heartDescEl.addEventListener('input', (e) => {
+            if(isEditMode) appData.texts.heart[isSystole ? 'systole' : 'diastole'].desc = e.target.innerText;
+        });
+        infoDescEl.addEventListener('input', (e) => {
+            if(isEditMode && currentOrganDisplay) appData.texts.organs[currentOrganDisplay] = e.target.innerText;
+        });
+
+        function showOrganInfo(organName) {
+            if(!organName) return;
+            currentOrganDisplay = organName;
+            const infoTitle = document.getElementById('info-title');
+            infoTitle.textContent = organName;
+            const isLymph = lymphKeys.includes(organName);
+            infoTitle.className = `text-3xl font-bold mb-4 text-center ${isLymph ? 'text-green-400' : 'text-yellow-400'}`;
+            infoDescEl.textContent = appData.texts.organs[organName] || "請輸入解說文字...";
+        }
+
+        // --- 4. 核心渲染 ---
+        function renderSVG() {
+            pathsGroup.innerHTML = '';
+            hotspotsGroup.innerHTML = '';
+            controlPointsGroup.innerHTML = '';
+
+            const isEditingPath = isEditMode && currentEditTarget.startsWith('path|');
+            const isEditingHotspot = isEditMode && currentEditTarget.startsWith('hotspot|');
+            const targetKey = currentEditTarget.split('|')[1];
+
+            Object.keys(appData.paths).forEach(key => {
+                const isOxy = key.startsWith('sys-art') || key.startsWith('pul-vein');
+                const categoryClass = key.startsWith('portal-vein') ? 'portal-vein' : key.split('-').slice(0, 2).join('-'); 
+                const pointsStr = appData.paths[key].map(p => p.join(',')).join(' ');
+                
+                const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+                polyline.setAttribute('points', pointsStr);
+                
+                let classNames = `vessel-path ${isOxy ? 'oxy-path' : 'deoxy-path'} ${categoryClass}`;
+                if (isEditingPath && key === targetKey) classNames += ' editing-target';
+                polyline.setAttribute('class', classNames);
+                pathsGroup.appendChild(polyline);
+
+                if (isEditingPath && key === targetKey) {
+                    appData.paths[key].forEach((point, index) => {
+                        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                        circle.setAttribute('cx', point[0]); circle.setAttribute('cy', point[1]); circle.setAttribute('r', 8);
+                        circle.setAttribute('fill', index === 0 ? '#00ff00' : (index === appData.paths[key].length - 1 ? '#ff0000' : '#ffff00'));
+                        circle.setAttribute('class', 'control-point');
+                        circle.dataset.action = 'drag-path'; circle.dataset.index = index;
+                        circle.addEventListener('contextmenu', (e) => { e.preventDefault(); if (appData.paths[key].length > 2) { appData.paths[key].splice(index, 1); renderSVG(); } else alert('需保留首尾點！'); });
+                        controlPointsGroup.appendChild(circle);
+                    });
+                }
+            });
+
+            Object.keys(appData.hotspots).forEach(key => {
+                const cx = appData.hotspots[key][0];
+                const cy = appData.hotspots[key][1];
+                
+                if (isEditMode && (!isEditingHotspot || key !== targetKey)) return;
+
+                const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                
+                if (!isEditMode) {
+                    group.setAttribute('class', 'organ-group');
+                    group.dataset.organ = key;
+
+                    const trigger = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    trigger.setAttribute('cx', cx); trigger.setAttribute('cy', cy); trigger.setAttribute('r', 40); 
+                    trigger.setAttribute('class', 'hotspot-trigger');
+                    group.appendChild(trigger);
+
+                    const blackDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    blackDot.setAttribute('cx', cx); blackDot.setAttribute('cy', cy); blackDot.setAttribute('r', 15);
+                    const isLymph = lymphKeys.includes(key);
+                    blackDot.setAttribute('fill', '#000000'); 
+                    blackDot.setAttribute('stroke', isLymph ? '#4ade80' : '#ffffff'); 
+                    blackDot.setAttribute('stroke-width', 3);
+                    blackDot.setAttribute('class', 'animate-pulse pointer-events-none');
+                    group.appendChild(blackDot);
+                    
+                    hotspotsGroup.appendChild(group);
+                } else if (isEditingHotspot && key === targetKey) {
+                    const editDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    editDot.setAttribute('cx', cx); editDot.setAttribute('cy', cy); editDot.setAttribute('r', 15);
+                    editDot.setAttribute('fill', '#000000'); editDot.setAttribute('class', 'hotspot-editing');
+                    editDot.dataset.action = 'drag-hotspot';
+                    controlPointsGroup.appendChild(editDot);
+                }
+            });
+
+            if(!isEditMode) {
+                document.querySelectorAll('.organ-group').forEach(group => {
+                    group.addEventListener('click', (e) => {
+                        showOrganInfo(e.currentTarget.getAttribute('data-organ'));
+                    });
+                });
+            }
+        }
+
+        // --- 5. 拖曳引擎 ---
+        function getMousePosition(evt) {
+            const CTM = svg.getScreenCTM();
+            return { x: (evt.clientX - CTM.e) / CTM.a, y: (evt.clientY - CTM.f) / CTM.d };
+        }
+
+        svg.addEventListener('mousedown', (e) => {
+            if (!isEditMode) return;
+            if (e.target.classList.contains('control-point')) {
+                draggedNode = { action: 'drag-path', index: parseInt(e.target.dataset.index) };
+            } else if (e.target.classList.contains('hotspot-editing')) {
+                draggedNode = { action: 'drag-hotspot' };
+            }
+        });
+        
+        svg.addEventListener('mousemove', (e) => {
+            if (draggedNode && isEditMode) {
+                const coord = getMousePosition(e);
+                const targetKey = currentEditTarget.split('|')[1];
+                
+                if (draggedNode.action === 'drag-path') {
+                    appData.paths[targetKey][draggedNode.index] = [Math.round(coord.x), Math.round(coord.y)];
+                } else if (draggedNode.action === 'drag-hotspot') {
+                    appData.hotspots[targetKey] = [Math.round(coord.x), Math.round(coord.y)];
+                }
+                renderSVG();
+            }
+        });
+        window.addEventListener('mouseup', () => { draggedNode = null; });
+        
+        svg.addEventListener('dblclick', (e) => {
+            if (!isEditMode || currentEditTarget.startsWith('hotspot|')) return;
+            const coord = getMousePosition(e);
+            const targetKey = currentEditTarget.split('|')[1];
+            const activeData = appData.paths[targetKey];
+            let minDistance = Infinity, insertIndex = 1;
+            
+            for (let i = 0; i < activeData.length - 1; i++) {
+                const cx = (activeData[i][0] + activeData[i+1][0]) / 2;
+                const cy = (activeData[i][1] + activeData[i+1][1]) / 2;
+                const dist = Math.hypot(coord.x - cx, coord.y - cy);
+                if (dist < minDistance) { minDistance = dist; insertIndex = i + 1; }
+            }
+            activeData.splice(insertIndex, 0, [Math.round(coord.x), Math.round(coord.y)]);
+            renderSVG();
+        });
+
+        // --- 6. 狀態與 JSON 匯出匯入控制 ---
+        function setPlayState(state) {
+            if (isEditMode) return;
+            document.getElementById('mask-left').classList.toggle('mask-off', state === 'systole');
+            document.getElementById('mask-right').classList.toggle('mask-off', state !== 'systole');
+            document.body.classList.toggle('active-systole', state === 'systole');
+            document.body.classList.toggle('active-diastole', state !== 'systole');
+            
+            const hState = appData.texts.heart[state];
+            heartTitleEl.textContent = hState.title;
+            heartTitleEl.className = `text-2xl font-bold mb-3 text-center transition-all duration-300 outline-none ${hState.color}`;
+            heartDescEl.textContent = hState.desc;
+        }
+
+        document.getElementById('btn-systole').onclick = () => { clearInterval(autoInterval); isSystole = true; setPlayState('systole'); };
+        document.getElementById('btn-diastole').onclick = () => { clearInterval(autoInterval); isSystole = false; setPlayState('diastole'); };
+        document.getElementById('btn-auto').onclick = (e) => {
+            if (autoInterval) {
+                clearInterval(autoInterval); autoInterval = null;
+                e.target.textContent = '自動心搏'; e.target.classList.replace('bg-slate-600', 'bg-green-600');
+            } else {
+                e.target.textContent = '停止心搏'; e.target.classList.replace('bg-green-600', 'bg-slate-600');
+                autoInterval = setInterval(() => { isSystole = !isSystole; setPlayState(isSystole ? 'systole' : 'diastole'); }, 900);
+            }
+        };
+
+        function toggleTextEditable(editable) {
+            const els = [heartTitleEl, heartDescEl, infoDescEl];
+            els.forEach(el => {
+                el.contentEditable = editable ? "true" : "false";
+                if(editable) el.classList.add('editing-text-active');
+                else el.classList.remove('editing-text-active');
+            });
+        }
+
+        document.getElementById('btn-edit').onclick = (e) => {
+            isEditMode = !isEditMode;
+            clearInterval(autoInterval);
+            
+            selectMenu.classList.toggle('hidden', !isEditMode);
+            document.getElementById('btn-save').classList.toggle('hidden', !isEditMode);
+            document.getElementById('btn-export').classList.toggle('hidden', !isEditMode);
+            document.getElementById('btn-import').classList.toggle('hidden', !isEditMode);
+            document.getElementById('edit-hint').classList.toggle('hidden', !isEditMode);
+            document.body.classList.toggle('edit-mode', isEditMode);
+            
+            toggleTextEditable(isEditMode);
+
+            if(isEditMode) {
+                e.target.textContent = '結束校準與編輯'; e.target.classList.replace('bg-yellow-600', 'bg-purple-600');
+                document.body.classList.remove('active-systole', 'active-diastole');
+                document.getElementById('mask-left').classList.remove('mask-off');
+                document.getElementById('mask-right').classList.remove('mask-off');
+                
+                if(currentEditTarget.startsWith('hotspot|')) showOrganInfo(currentEditTarget.split('|')[1]);
+            } else {
+                e.target.textContent = '🛠️ 進入路徑/文字校準'; e.target.classList.replace('bg-purple-600', 'bg-yellow-600');
+                setPlayState(isSystole ? 'systole' : 'diastole');
+            }
+            renderSVG();
+        };
+
+        selectMenu.onchange = (e) => { 
+            currentEditTarget = e.target.value; 
+            if(isEditMode && currentEditTarget.startsWith('hotspot|')) showOrganInfo(currentEditTarget.split('|')[1]);
+            renderSVG(); 
+        };
+        
+        document.getElementById('btn-save').onclick = () => {
+            localStorage.setItem('circulationConfigV13', JSON.stringify(appData));
+            alert('路徑、黑點位置與自編文字皆已儲存至本機快取！');
+        };
+
+        // 匯出功能
+        document.getElementById('btn-export').onclick = () => {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(appData, null, 2));
+            const a = document.createElement('a');
+            a.setAttribute("href", dataStr); a.setAttribute("download", "circulation-system-v13.json");
+            document.body.appendChild(a); a.click(); a.remove();
+        };
+
+        // 匯入功能 (點擊按鈕觸發隱藏的 file input)
+        document.getElementById('btn-import').onclick = () => {
+            document.getElementById('file-import').click();
+        };
+
+        // 處理匯入的檔案讀取
+        document.getElementById('file-import').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const importedData = JSON.parse(e.target.result);
+                    if(importedData.paths && importedData.hotspots && importedData.texts) {
+                        appData = importedData;
+                        localStorage.setItem('circulationConfigV13', JSON.stringify(appData));
+                        alert('✅ JSON 設定檔匯入成功！即將為您重新整理網頁套用設定。');
+                        window.location.reload();
+                    } else {
+                        alert('❌ 匯入失敗：這不是正確的系統備份檔 (缺少 paths, hotspots 或 texts)。');
+                    }
+                } catch (err) {
+                    alert('❌ 匯入失敗：檔案內容無法解析為有效的 JSON。');
+                }
+            };
+            reader.readAsText(file);
+            // 清除 input 值以允許重複匯入同一個檔案
+            e.target.value = '';
+        });
+
+        currentEditTarget = selectMenu.value; 
+        renderSVG();
+        setPlayState('systole');
+    </script>
+</body>
+</html>
