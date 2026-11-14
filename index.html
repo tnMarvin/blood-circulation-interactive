@@ -1,6 +1,6 @@
 <!--
-功能：血液循環互動系統 - V13 (新增 JSON 匯入功能)
-代碼產生日期與時間：2026-11-14 23:25
+功能：血液循環互動系統 - V15 終極完成版 (Web Audio API 擬真雙重瓣膜心音合成 / 獨立音效切換)
+代碼產生日期與時間：2026-11-14 23:59
 -->
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -112,6 +112,7 @@
                     <button id="btn-systole" class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded font-bold transition flex-1 text-sm xl:text-base">心室收縮(送血)</button>
                     <button id="btn-diastole" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded font-bold transition flex-1 text-sm xl:text-base">心室舒張(回流)</button>
                     <button id="btn-auto" class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded font-bold transition text-sm xl:text-base">自動心搏</button>
+                    <button id="btn-sound" class="px-3 py-2 bg-amber-600 hover:bg-amber-500 rounded font-bold transition text-sm flex items-center justify-center gap-1" title="切換心跳音效">🔊 音效: 開</button>
                 </div>
                 
                 <!-- 控制按鈕區 -->
@@ -122,7 +123,6 @@
                     <button id="btn-save" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 rounded font-bold hidden transition text-sm flex-1">💾 儲存</button>
                     <button id="btn-export" class="px-3 py-2 bg-teal-600 hover:bg-teal-500 rounded font-bold hidden transition text-sm flex-1">📥 匯出</button>
                     
-                    <!-- 隱藏的檔案上傳輸入框 -->
                     <input type="file" id="file-import" accept=".json" class="hidden">
                     <button id="btn-import" class="px-3 py-2 bg-orange-600 hover:bg-orange-500 rounded font-bold hidden transition text-sm flex-1">📤 匯入</button>
                 </div>
@@ -195,7 +195,7 @@
             }
         };
 
-        // --- 2. 資料庫初始化 ---
+        // --- 2. 資料庫預設骨架 ---
         const defaultData = { paths: {}, hotspots: {}, texts: JSON.parse(JSON.stringify(defaultTexts)) };
         for(let i=1; i<=8; i++) defaultData.paths[`sys-art-${i}`] = [[500, 750], [450 + i*15, 950]];
         for(let i=1; i<=7; i++) defaultData.paths[`sys-vein-${i}`] = [[450 + i*15, 950], [450, 700]];
@@ -208,24 +208,11 @@
         defaultData.hotspots["小腸"] = [630, 810]; defaultData.hotspots["大腸"] = [580, 780]; 
         defaultData.hotspots["胰臟"] = [650, 850]; defaultData.hotspots["腎臟"] = [380, 880];
         defaultData.hotspots["一般微血管"] = [500, 1225];
-        
         defaultData.hotspots["微淋巴管盲端"] = [550, 1200]; defaultData.hotspots["淋巴結"] = [430, 420];
         defaultData.hotspots["淋巴管段落"] = [350, 800]; defaultData.hotspots["鎖骨下靜脈"] = [450, 380];
         defaultData.hotspots["小腸乳糜管"] = [660, 820];
 
-        let appData = JSON.parse(localStorage.getItem('circulationConfigV13')) || 
-                      JSON.parse(localStorage.getItem('circulationConfigV12')) || 
-                      JSON.parse(localStorage.getItem('circulationConfigV11')) || defaultData;
-        
-        if(!appData.paths) appData = defaultData;
-        if(!appData.texts) appData.texts = JSON.parse(JSON.stringify(defaultTexts));
-        const lymphKeys = ["微淋巴管盲端", "淋巴結", "淋巴管段落", "鎖骨下靜脈", "小腸乳糜管"];
-        lymphKeys.forEach(key => {
-            if(!appData.hotspots[key]) {
-                appData.hotspots[key] = defaultData.hotspots[key];
-                appData.texts.organs[key] = defaultTexts.organs[key];
-            }
-        });
+        let appData = defaultData;
 
         // --- 3. 狀態與 DOM ---
         let isEditMode = false;
@@ -234,6 +221,7 @@
         let autoInterval = null;
         let isSystole = true;
         let currentOrganDisplay = null;
+        let isSoundEnabled = true; // 預設開啟音效
 
         const svg = document.getElementById('interactive-svg');
         const pathsGroup = document.getElementById('paths-group');
@@ -241,7 +229,6 @@
         const controlPointsGroup = document.getElementById('control-points');
         const selectMenu = document.getElementById('edit-target');
 
-        // 生成下拉選單
         const optGroupSysArt = document.createElement('optgroup'); optGroupSysArt.label = "體循環 - 動脈 (含氧/淡紅閃)";
         for(let i=1; i<=8; i++) optGroupSysArt.innerHTML += `<option value="path|sys-art-${i}">🔴 體動脈 ${i}</option>`;
         const optGroupSysVein = document.createElement('optgroup'); optGroupSysVein.label = "體循環 - 靜脈 (缺氧/藍閃)";
@@ -251,12 +238,14 @@
         optGroupPul.innerHTML += `<option value="path|pul-art-1">🔵 肺動脈 1</option><option value="path|pul-art-2">🔵 肺動脈 2</option>`;
         optGroupPul.innerHTML += `<option value="path|pul-vein-1">🔴 肺靜脈 1</option><option value="path|pul-vein-2">🔴 肺靜脈 2</option>`;
         
-        const optGroupBloodHotspot = document.createElement('optgroup'); optGroupBloodHotspot.label = "血液器官黑點";
         const bloodOrgans = ["肺臟", "肝臟", "肝門靜脈", "胃", "小腸", "大腸", "胰臟", "腎臟", "一般微血管"];
-        bloodOrgans.forEach(key => { if(appData.hotspots[key]) optGroupBloodHotspot.innerHTML += `<option value="hotspot|${key}">⚫ ${key}</option>`; });
+        const lymphKeys = ["微淋巴管盲端", "淋巴結", "淋巴管段落", "鎖骨下靜脈", "小腸乳糜管"];
+
+        const optGroupBloodHotspot = document.createElement('optgroup'); optGroupBloodHotspot.label = "血液器官黑點";
+        bloodOrgans.forEach(key => { optGroupBloodHotspot.innerHTML += `<option value="hotspot|${key}">⚫ ${key}</option>`; });
         
         const optGroupLymphHotspot = document.createElement('optgroup'); optGroupLymphHotspot.label = "淋巴系統考點";
-        lymphKeys.forEach(key => { if(appData.hotspots[key]) optGroupLymphHotspot.innerHTML += `<option value="hotspot|${key}">🦠 ${key}</option>`; });
+        lymphKeys.forEach(key => { optGroupLymphHotspot.innerHTML += `<option value="hotspot|${key}">🦠 ${key}</option>`; });
 
         selectMenu.appendChild(optGroupBloodHotspot);
         selectMenu.appendChild(optGroupLymphHotspot);
@@ -264,7 +253,7 @@
         selectMenu.appendChild(optGroupPul);
         selectMenu.appendChild(optGroupSysVein);
 
-        // --- 文字即時編輯綁定 ---
+        // 文字自編監聽
         const heartTitleEl = document.getElementById('heart-state-title');
         const heartDescEl = document.getElementById('heart-state-desc');
         const infoDescEl = document.getElementById('info-desc');
@@ -286,7 +275,8 @@
             infoTitle.textContent = organName;
             const isLymph = lymphKeys.includes(organName);
             infoTitle.className = `text-3xl font-bold mb-4 text-center ${isLymph ? 'text-green-400' : 'text-yellow-400'}`;
-            infoDescEl.textContent = appData.texts.organs[organName] || "請輸入解說文字...";
+            infoDescEl.textContent = (appData.texts && appData.texts.organs && appData.texts.organs[organName]) 
+                ? appData.texts.organs[organName] : "請輸入解說文字...";
         }
 
         // --- 4. 核心渲染 ---
@@ -299,67 +289,71 @@
             const isEditingHotspot = isEditMode && currentEditTarget.startsWith('hotspot|');
             const targetKey = currentEditTarget.split('|')[1];
 
-            Object.keys(appData.paths).forEach(key => {
-                const isOxy = key.startsWith('sys-art') || key.startsWith('pul-vein');
-                const categoryClass = key.startsWith('portal-vein') ? 'portal-vein' : key.split('-').slice(0, 2).join('-'); 
-                const pointsStr = appData.paths[key].map(p => p.join(',')).join(' ');
-                
-                const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-                polyline.setAttribute('points', pointsStr);
-                
-                let classNames = `vessel-path ${isOxy ? 'oxy-path' : 'deoxy-path'} ${categoryClass}`;
-                if (isEditingPath && key === targetKey) classNames += ' editing-target';
-                polyline.setAttribute('class', classNames);
-                pathsGroup.appendChild(polyline);
-
-                if (isEditingPath && key === targetKey) {
-                    appData.paths[key].forEach((point, index) => {
-                        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                        circle.setAttribute('cx', point[0]); circle.setAttribute('cy', point[1]); circle.setAttribute('r', 8);
-                        circle.setAttribute('fill', index === 0 ? '#00ff00' : (index === appData.paths[key].length - 1 ? '#ff0000' : '#ffff00'));
-                        circle.setAttribute('class', 'control-point');
-                        circle.dataset.action = 'drag-path'; circle.dataset.index = index;
-                        circle.addEventListener('contextmenu', (e) => { e.preventDefault(); if (appData.paths[key].length > 2) { appData.paths[key].splice(index, 1); renderSVG(); } else alert('需保留首尾點！'); });
-                        controlPointsGroup.appendChild(circle);
-                    });
-                }
-            });
-
-            Object.keys(appData.hotspots).forEach(key => {
-                const cx = appData.hotspots[key][0];
-                const cy = appData.hotspots[key][1];
-                
-                if (isEditMode && (!isEditingHotspot || key !== targetKey)) return;
-
-                const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-                
-                if (!isEditMode) {
-                    group.setAttribute('class', 'organ-group');
-                    group.dataset.organ = key;
-
-                    const trigger = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                    trigger.setAttribute('cx', cx); trigger.setAttribute('cy', cy); trigger.setAttribute('r', 40); 
-                    trigger.setAttribute('class', 'hotspot-trigger');
-                    group.appendChild(trigger);
-
-                    const blackDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                    blackDot.setAttribute('cx', cx); blackDot.setAttribute('cy', cy); blackDot.setAttribute('r', 15);
-                    const isLymph = lymphKeys.includes(key);
-                    blackDot.setAttribute('fill', '#000000'); 
-                    blackDot.setAttribute('stroke', isLymph ? '#4ade80' : '#ffffff'); 
-                    blackDot.setAttribute('stroke-width', 3);
-                    blackDot.setAttribute('class', 'animate-pulse pointer-events-none');
-                    group.appendChild(blackDot);
+            if(appData.paths) {
+                Object.keys(appData.paths).forEach(key => {
+                    const isOxy = key.startsWith('sys-art') || key.startsWith('pul-vein');
+                    const categoryClass = key.startsWith('portal-vein') ? 'portal-vein' : key.split('-').slice(0, 2).join('-'); 
+                    const pointsStr = appData.paths[key].map(p => p.join(',')).join(' ');
                     
-                    hotspotsGroup.appendChild(group);
-                } else if (isEditingHotspot && key === targetKey) {
-                    const editDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                    editDot.setAttribute('cx', cx); editDot.setAttribute('cy', cy); editDot.setAttribute('r', 15);
-                    editDot.setAttribute('fill', '#000000'); editDot.setAttribute('class', 'hotspot-editing');
-                    editDot.dataset.action = 'drag-hotspot';
-                    controlPointsGroup.appendChild(editDot);
-                }
-            });
+                    const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+                    polyline.setAttribute('points', pointsStr);
+                    
+                    let classNames = `vessel-path ${isOxy ? 'oxy-path' : 'deoxy-path'} ${categoryClass}`;
+                    if (isEditingPath && key === targetKey) classNames += ' editing-target';
+                    polyline.setAttribute('class', classNames);
+                    pathsGroup.appendChild(polyline);
+
+                    if (isEditingPath && key === targetKey) {
+                        appData.paths[key].forEach((point, index) => {
+                            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                            circle.setAttribute('cx', point[0]); circle.setAttribute('cy', point[1]); circle.setAttribute('r', 8);
+                            circle.setAttribute('fill', index === 0 ? '#00ff00' : (index === appData.paths[key].length - 1 ? '#ff0000' : '#ffff00'));
+                            circle.setAttribute('class', 'control-point');
+                            circle.dataset.action = 'drag-path'; circle.dataset.index = index;
+                            circle.addEventListener('contextmenu', (e) => { e.preventDefault(); if (appData.paths[key].length > 2) { appData.paths[key].splice(index, 1); renderSVG(); } else alert('需保留首尾點！'); });
+                            controlPointsGroup.appendChild(circle);
+                        });
+                    }
+                });
+            }
+
+            if(appData.hotspots) {
+                Object.keys(appData.hotspots).forEach(key => {
+                    const cx = appData.hotspots[key][0];
+                    const cy = appData.hotspots[key][1];
+                    
+                    if (isEditMode && (!isEditingHotspot || key !== targetKey)) return;
+
+                    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    
+                    if (!isEditMode) {
+                        group.setAttribute('class', 'organ-group');
+                        group.dataset.organ = key;
+
+                        const trigger = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                        trigger.setAttribute('cx', cx); trigger.setAttribute('cy', cy); trigger.setAttribute('r', 40); 
+                        trigger.setAttribute('class', 'hotspot-trigger');
+                        group.appendChild(trigger);
+
+                        const blackDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                        blackDot.setAttribute('cx', cx); blackDot.setAttribute('cy', cy); blackDot.setAttribute('r', 15);
+                        const isLymph = lymphKeys.includes(key);
+                        blackDot.setAttribute('fill', '#000000'); 
+                        blackDot.setAttribute('stroke', isLymph ? '#4ade80' : '#ffffff'); 
+                        blackDot.setAttribute('stroke-width', 3);
+                        blackDot.setAttribute('class', 'animate-pulse pointer-events-none');
+                        group.appendChild(blackDot);
+                        
+                        hotspotsGroup.appendChild(group);
+                    } else if (isEditingHotspot && key === targetKey) {
+                        const editDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                        editDot.setAttribute('cx', cx); editDot.setAttribute('cy', cy); editDot.setAttribute('r', 15);
+                        editDot.setAttribute('fill', '#000000'); editDot.setAttribute('class', 'hotspot-editing');
+                        editDot.dataset.action = 'drag-hotspot';
+                        controlPointsGroup.appendChild(editDot);
+                    }
+                });
+            }
 
             if(!isEditMode) {
                 document.querySelectorAll('.organ-group').forEach(group => {
@@ -417,7 +411,67 @@
             renderSVG();
         });
 
-        // --- 6. 狀態與 JSON 匯出匯入控制 ---
+        // --- 6. Web Audio API 心音即時合成引擎 ---
+        let audioCtx = null;
+        function initAudio() {
+            if (!audioCtx) {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (AudioContext) audioCtx = new AudioContext();
+            }
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        // S1: 第一心音 (房室瓣關閉，低沉長音)
+        function playS1() {
+            if (!isSoundEnabled || !audioCtx) return;
+            try {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                const now = audioCtx.currentTime;
+
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(65, now);
+                osc.frequency.exponentialRampToValueAtTime(35, now + 0.12);
+
+                gain.gain.setValueAtTime(0.001, now);
+                gain.gain.linearRampToValueAtTime(0.7, now + 0.02);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                osc.start(now);
+                osc.stop(now + 0.13);
+            } catch(e){}
+        }
+
+        // S2: 第二心音 (半月瓣關閉，稍高頻清脆短音)
+        function playS2() {
+            if (!isSoundEnabled || !audioCtx) return;
+            try {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                const now = audioCtx.currentTime;
+
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(105, now);
+                osc.frequency.exponentialRampToValueAtTime(50, now + 0.08);
+
+                gain.gain.setValueAtTime(0.001, now);
+                gain.gain.linearRampToValueAtTime(0.8, now + 0.015);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                osc.start(now);
+                osc.stop(now + 0.09);
+            } catch(e){}
+        }
+
+        // --- 7. 狀態控制 ---
         function setPlayState(state) {
             if (isEditMode) return;
             document.getElementById('mask-left').classList.toggle('mask-off', state === 'systole');
@@ -425,21 +479,54 @@
             document.body.classList.toggle('active-systole', state === 'systole');
             document.body.classList.toggle('active-diastole', state !== 'systole');
             
-            const hState = appData.texts.heart[state];
-            heartTitleEl.textContent = hState.title;
-            heartTitleEl.className = `text-2xl font-bold mb-3 text-center transition-all duration-300 outline-none ${hState.color}`;
-            heartDescEl.textContent = hState.desc;
+            if(appData.texts && appData.texts.heart) {
+                const hState = appData.texts.heart[state];
+                heartTitleEl.textContent = hState.title;
+                heartTitleEl.className = `text-2xl font-bold mb-3 text-center transition-all duration-300 outline-none ${hState.color}`;
+                heartDescEl.textContent = hState.desc;
+            }
+
+            // 心音觸發：收縮期播 S1，舒張期播 S2
+            if (state === 'systole') playS1();
+            else playS2();
         }
 
-        document.getElementById('btn-systole').onclick = () => { clearInterval(autoInterval); isSystole = true; setPlayState('systole'); };
-        document.getElementById('btn-diastole').onclick = () => { clearInterval(autoInterval); isSystole = false; setPlayState('diastole'); };
+        document.getElementById('btn-systole').onclick = () => { 
+            initAudio(); 
+            clearInterval(autoInterval); 
+            isSystole = true; 
+            setPlayState('systole'); 
+        };
+        
+        document.getElementById('btn-diastole').onclick = () => { 
+            initAudio(); 
+            clearInterval(autoInterval); 
+            isSystole = false; 
+            setPlayState('diastole'); 
+        };
+
         document.getElementById('btn-auto').onclick = (e) => {
+            initAudio();
             if (autoInterval) {
                 clearInterval(autoInterval); autoInterval = null;
                 e.target.textContent = '自動心搏'; e.target.classList.replace('bg-slate-600', 'bg-green-600');
             } else {
                 e.target.textContent = '停止心搏'; e.target.classList.replace('bg-green-600', 'bg-slate-600');
                 autoInterval = setInterval(() => { isSystole = !isSystole; setPlayState(isSystole ? 'systole' : 'diastole'); }, 900);
+            }
+        };
+
+        // 音效切換開關
+        const btnSound = document.getElementById('btn-sound');
+        btnSound.onclick = () => {
+            initAudio();
+            isSoundEnabled = !isSoundEnabled;
+            if (isSoundEnabled) {
+                btnSound.textContent = '🔊 音效: 開';
+                btnSound.classList.replace('bg-slate-600', 'bg-amber-600');
+            } else {
+                btnSound.textContent = '🔇 音效: 關';
+                btnSound.classList.replace('bg-amber-600', 'bg-slate-600');
             }
         };
 
@@ -486,11 +573,10 @@
         };
         
         document.getElementById('btn-save').onclick = () => {
-            localStorage.setItem('circulationConfigV13', JSON.stringify(appData));
+            localStorage.setItem('circulationConfigV14', JSON.stringify(appData));
             alert('路徑、黑點位置與自編文字皆已儲存至本機快取！');
         };
 
-        // 匯出功能
         document.getElementById('btn-export').onclick = () => {
             const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(appData, null, 2));
             const a = document.createElement('a');
@@ -498,12 +584,10 @@
             document.body.appendChild(a); a.click(); a.remove();
         };
 
-        // 匯入功能 (點擊按鈕觸發隱藏的 file input)
         document.getElementById('btn-import').onclick = () => {
             document.getElementById('file-import').click();
         };
 
-        // 處理匯入的檔案讀取
         document.getElementById('file-import').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -513,7 +597,7 @@
                     const importedData = JSON.parse(e.target.result);
                     if(importedData.paths && importedData.hotspots && importedData.texts) {
                         appData = importedData;
-                        localStorage.setItem('circulationConfigV13', JSON.stringify(appData));
+                        localStorage.setItem('circulationConfigV14', JSON.stringify(appData));
                         alert('✅ JSON 設定檔匯入成功！即將為您重新整理網頁套用設定。');
                         window.location.reload();
                     } else {
@@ -524,13 +608,43 @@
                 }
             };
             reader.readAsText(file);
-            // 清除 input 值以允許重複匯入同一個檔案
             e.target.value = '';
         });
 
-        currentEditTarget = selectMenu.value; 
-        renderSVG();
-        setPlayState('systole');
+        // --- 8. 初始化啟動流程 (自動 Fetch GitHub 上的 JSON 檔) ---
+        function initSystem() {
+            fetch('circulation-system-v13.json')
+                .then(res => {
+                    if (!res.ok) throw new Error('Network response was not ok');
+                    return res.json();
+                })
+                .then(data => {
+                    if (data && data.paths && data.hotspots && data.texts) {
+                        appData = data;
+                    }
+                    finalizeInit();
+                })
+                .catch(() => {
+                    const local = localStorage.getItem('circulationConfigV14') || 
+                                  localStorage.getItem('circulationConfigV13') || 
+                                  localStorage.getItem('circulationConfigV12');
+                    if (local) {
+                        try { appData = JSON.parse(local); } catch(e){}
+                    }
+                    finalizeInit();
+                });
+        }
+
+        function finalizeInit() {
+            currentEditTarget = selectMenu.value; 
+            renderSVG();
+            // 初始靜態呈現，不播放啟動聲音
+            isSoundEnabled = false;
+            setPlayState('systole');
+            isSoundEnabled = true;
+        }
+
+        initSystem();
     </script>
 </body>
 </html>
